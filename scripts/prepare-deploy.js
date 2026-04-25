@@ -60,6 +60,15 @@ async function main() {
     "[BuildProperties]\nOperationId = \"standalone\"\n"
   );
 
+  // Custom startup that cleans the stale node_modules symlink Oryx leaves
+  // behind and extracts node_modules.tar.gz (which Kudu auto-creates from
+  // our deployed node_modules directory during ZIP deploy).
+  const startupSrc = path.join(__dirname, "startup.sh");
+  if (fs.existsSync(startupSrc)) {
+    fs.copyFileSync(startupSrc, path.join(DEPLOY_DIR, "startup.sh"));
+    fs.chmodSync(path.join(DEPLOY_DIR, "startup.sh"), 0o755);
+  }
+
   // Ensure @swc/helpers is present — NFT trace sometimes misses it
   const swcHelpersSrc = path.join(ROOT, "node_modules", "@swc", "helpers");
   const swcHelpersDst = path.join(DEPLOY_DIR, "node_modules", "@swc", "helpers");
@@ -87,6 +96,21 @@ async function main() {
       console.log(`  removed node_modules/${pkg}`);
     }
   }
+
+  // Pre-tar node_modules so Kudu doesn't re-tar it during deploy (which can
+  // hang for 15+ minutes on Linux App Service). Our startup.sh extracts it.
+  console.log("Pre-tarring node_modules to avoid Kudu re-tar...");
+  await new Promise((resolve, reject) => {
+    const tarPath = path.join(DEPLOY_DIR, "node_modules.tar.gz");
+    const out = fs.createWriteStream(tarPath);
+    const tar = archiver("tar", { gzip: true, gzipOptions: { level: 6 } });
+    out.on("close", resolve);
+    tar.on("error", reject);
+    tar.pipe(out);
+    tar.directory(deployModules, "node_modules");
+    tar.finalize();
+  });
+  fs.rmSync(deployModules, { recursive: true });
 
   const zipPath = path.join(ROOT, "imoblens-deploy.zip");
   if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
