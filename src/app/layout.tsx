@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Syne, DM_Mono } from "next/font/google";
 import "./globals.css";
 import { Header } from "@/components/ui/Header";
+import { DbWakeBanner } from "@/components/DbWakeBanner";
 
 const syne = Syne({
   variable: "--font-syne",
@@ -33,6 +34,7 @@ export default function RootLayout({
       className={`${syne.variable} ${dmMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col bg-cream text-dark">
+        <DbWakeBanner />
         <Header />
         <main className="flex-1 flex flex-col">{children}</main>
       </body>

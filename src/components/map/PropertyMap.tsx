@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import type { Map as LeafletMap, Marker as LeafletMarker } from "leaflet";
 import type { MockListing } from "@/types/listing";
 
 interface PropertyMapProps {
@@ -17,16 +18,17 @@ function formatPrice(price: number, transactionType: string) {
 
 export function PropertyMap({ listings, selectedId, onSelect }: PropertyMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<any>(null);
-  const markersRef = useRef<Record<string, any>>({});
+  const mapRef = useRef<LeafletMap | null>(null);
+  const markersRef = useRef<Record<string, LeafletMarker>>({});
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
     // Dynamic import to avoid SSR issues
     import("leaflet").then((L) => {
-      // Fix default icon path issue in bundlers
-      delete (L.Icon.Default.prototype as any)._getIconUrl;
+      // Fix default icon path issue in bundlers — Leaflet's Icon.Default
+      // uses a private _getIconUrl that needs to be deleted before merge.
+      delete (L.Icon.Default.prototype as { _getIconUrl?: unknown })._getIconUrl;
       L.Icon.Default.mergeOptions({
         iconRetinaUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
         iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",

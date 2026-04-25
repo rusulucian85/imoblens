@@ -45,7 +45,8 @@ model VerificationToken {
 
 // ─── Users ───────────────────────────────────────────────────────────────────
 
-// UserRole: BUYER | AGENT | ADMIN
+// role: VISITOR | BUYER | BUYER_PRO | AGENT | AGENT_PRO | ADMIN
+// (SQL Server + Prisma 7 doesn't support enums; values enforced in app code)
 model User {
   id            String    @id @default(cuid())
   name          String?
@@ -54,6 +55,7 @@ model User {
   image         String?
   phone         String?
   role          String    @default("BUYER")
+  bannedAt      DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -61,9 +63,15 @@ model User {
   sessions          Session[]
   agentProfile      AgentProfile?
   buyerProfile      BuyerProfile?
+  subscription      Subscription?
+  ownedListings     Listing[]          @relation("ListingOwner")
+  reportedTxns      Transaction[]      @relation("TransactionReporter")
   favorites         Favorite[]
-  viewingsAsVisitor Viewing[]         @relation("ViewingVisitor")
+  savedSearches     SavedSearch[]
+  listingViews      ListingView[]
+  viewingsAsVisitor Viewing[]          @relation("ViewingVisitor")
   pushSubscriptions PushSubscription[]
+  auditLogs         AuditLog[]
 }
 
 // ─── Agency ──────────────────────────────────────────────────────────────────
@@ -74,10 +82,12 @@ model Agency {
   slug        String   @unique
   logo        String?
   website     String?
+  email       String?
   phone       String?
   address     String?
   city        String?
   description String?
+  verified    Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -97,6 +107,7 @@ model AgentProfile {
   specialties String?  @default("[]")
   rating      Float?
   reviewCount Int      @default(0)
+  verified    Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -108,50 +119,86 @@ model AgentProfile {
 
 // ─── Listing ─────────────────────────────────────────────────────────────────
 
-// type: APARTMENT | HOUSE | STUDIO | VILLA | LAND | COMMERCIAL
-// status: ACTIVE | PENDING | SOLD | RENTED | WITHDRAWN
+// type:            APARTMENT | HOUSE | STUDIO | VILLA | LAND | COMMERCIAL | GARAGE
+// status:          ACTIVE | PENDING | SOLD | RENTED | WITHDRAWN | RESERVED
 // transactionType: SALE | RENT
 model Listing {
   id              String    @id @default(cuid())
   slug            String    @unique
   agentId         String
   agencyId        String?
+  ownerId         String?
   title           String
   description     String?
+  descriptionEn   String?
   type            String
   status          String    @default("ACTIVE")
   transactionType String
-  price           Int
-  pricePerSqm     Int?
-  currency        String    @default("EUR")
-  area            Float
-  rooms           Int?
-  bathrooms       Int?
-  floor           Int?
-  totalFloors     Int?
-  yearBuilt       Int?
-  parking         Boolean   @default(false)
-  furnished       Boolean   @default(false)
-  address         String
-  city            String
-  neighborhood    String?
-  county          String?
-  postalCode      String?
-  latitude        Float
-  longitude       Float
-  features        String?   @default("[]")
-  energyClass     String?
-  viewCount       Int       @default(0)
-  featured        Boolean   @default(false)
-  publishedAt     DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
 
-  agent     AgentProfile   @relation(fields: [agentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  agency    Agency?        @relation(fields: [agencyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  images    ListingImage[]
-  favorites Favorite[]
-  viewings  Viewing[]
+  // Price
+  priceAsked  Int
+  pricePerSqm Int?
+  currency    String @default("EUR")
+
+  // Property details
+  sqm          Float
+  sqmLand      Float?
+  rooms        Int?
+  bathrooms    Int?
+  floor        Int?
+  totalFloors  Int?
+  yearBuilt    Int?
+
+  // Features
+  hasParking Boolean @default(false)
+  hasGarage  Boolean @default(false)
+  hasBalcony Boolean @default(false)
+  hasStorage Boolean @default(false)
+  furnished  Boolean @default(false)
+
+  // Location
+  address      String
+  city         String
+  zone         String?
+  county       String?
+  postalCode   String?
+  lat          Float
+  lng          Float
+
+  features    String? @default("[]")
+  energyClass String?
+
+  // Meta
+  daysOnMarket Int?
+  viewCount    Int     @default(0)
+  featured     Boolean @default(false)
+  publishedAt  DateTime?
+  soldAt       DateTime?
+
+  // moderationStatus: APPROVED | PENDING | REJECTED
+  // (defaults APPROVED; admin queue activated when moderation feature ships)
+  moderationStatus String @default("APPROVED")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations — NoAction on owner/agent/agency to avoid SQL Server multi-path
+  // cascade conflicts (User reaches Listing through several routes)
+  agent        AgentProfile   @relation(fields: [agentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  agency       Agency?        @relation(fields: [agencyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  owner        User?          @relation("ListingOwner", fields: [ownerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  images       ListingImage[]
+  favorites    Favorite[]
+  viewings     Viewing[]
+  transactions Transaction[]
+  views        ListingView[]
+
+  @@index([city])
+  @@index([status])
+  @@index([transactionType])
+  @@index([priceAsked])
+  @@index([lat, lng])
+  @@index([publishedAt])
 }
 
 model ListingImage {
@@ -166,8 +213,47 @@ model ListingImage {
   listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
 }
 
-// ─── Buyer Profile ───────────────────────────────────────────────────────────
+// ─── Transactions (the moat) ─────────────────────────────────────────────────
 
+// Real, self-reported transaction prices. The owner of a Listing reports the
+// actual sold price after the deal closes. One Listing can have many
+// Transactions over its lifetime (sold 2018, resold 2024).
+//
+// source:        SELF_REPORTED | ANCPI | ADMIN_VERIFIED
+// financeType:   CASH | MORTGAGE | MIXED
+// buyerPurpose:  PRIMARY_RESIDENCE | INVESTMENT | VACATION | RENTAL
+// buyerAge:      AGE_18_30 | AGE_30_45 | AGE_45_60 | AGE_60_PLUS
+model Transaction {
+  id           String  @id @default(cuid())
+  listingId    String
+  reportedById String
+  priceAsked   Int
+  priceSold    Int
+  currency     String  @default("EUR")
+  source       String  @default("SELF_REPORTED")
+  verified     Boolean @default(false)
+
+  // Anonymized buyer demographics (transparency for BUYER_PRO)
+  financeType   String?
+  buyerAge      String?
+  buyerPurpose  String?
+  buyerOrigin   String?
+
+  soldAt    DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  listing    Listing @relation(fields: [listingId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  reportedBy User    @relation("TransactionReporter", fields: [reportedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([listingId])
+  @@index([soldAt])
+}
+
+// ─── Buyer Search Profile ────────────────────────────────────────────────────
+
+// Search preferences stored per user (NOT per-listing demographics — those
+// live on Transaction). Powers personalized alerts and saved searches.
 model BuyerProfile {
   id          String   @id @default(cuid())
   userId      String   @unique
@@ -184,18 +270,20 @@ model BuyerProfile {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
-// ─── Favorites ───────────────────────────────────────────────────────────────
+// ─── Favorites & Shortlists ──────────────────────────────────────────────────
 
 model Favorite {
   id        String   @id @default(cuid())
   userId    String
   listingId String
+  listName  String   @default("default")
   createdAt DateTime @default(now())
 
   user    User    @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   listing Listing @relation(fields: [listingId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  @@unique([userId, listingId])
+  @@unique([userId, listingId, listName])
+  @@index([userId])
 }
 
 // ─── Viewings ────────────────────────────────────────────────────────────────
@@ -228,4 +316,88 @@ model PushSubscription {
   createdAt DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ─── Subscriptions (Stripe) ──────────────────────────────────────────────────
+
+// One active subscription per user. Stripe is the source of truth — we mirror
+// the relevant fields here for fast role/gating checks without round-tripping.
+//
+// plan:   BUYER_PRO | AGENT_PRO
+// status: ACTIVE | TRIALING | PAST_DUE | CANCELED | UNPAID | INCOMPLETE
+model Subscription {
+  id                   String    @id @default(cuid())
+  userId               String    @unique
+  plan                 String
+  status               String
+  stripeCustomerId     String?
+  stripeSubscriptionId String?   @unique
+  stripePriceId        String?
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean   @default(false)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([stripeCustomerId])
+}
+
+// ─── Saved Searches ──────────────────────────────────────────────────────────
+
+// User's saved filters for alerts. `filters` is a JSON blob validated by Zod
+// in app code (matches the chatbot's filter schema in Phase 2).
+//
+// frequency: REALTIME | DAILY | WEEKLY
+model SavedSearch {
+  id         String    @id @default(cuid())
+  userId     String
+  name       String
+  filters    String
+  frequency  String    @default("DAILY")
+  lastSentAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ─── Listing Views (analytics) ───────────────────────────────────────────────
+
+// Granular view tracking for agent analytics ("5 BUYER_PRO views this week").
+// Anonymous views captured via ipHash (GDPR-safe — hashed, not stored raw).
+model ListingView {
+  id        String   @id @default(cuid())
+  listingId String
+  userId    String?
+  ipHash    String?
+  userAgent String?
+  viewedAt  DateTime @default(now())
+
+  listing Listing @relation(fields: [listingId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  user    User?   @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([listingId, viewedAt])
+  @@index([userId])
+}
+
+// ─── Audit Log (GDPR) ────────────────────────────────────────────────────────
+
+// Records sensitive actions for GDPR compliance and abuse investigation:
+// data exports, deletions, role changes, owner verification, price reports.
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  action     String
+  entityType String?
+  entityId   String?
+  metadata   String?  // JSON blob
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 }

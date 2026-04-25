@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import dynamic from "next/dynamic";
 import { ListingCard } from "@/components/ui/ListingCard";
 import { MOCK_LISTINGS } from "@/lib/mock-data";
@@ -33,7 +33,11 @@ export default function HomePage() {
   const [typeFilter, setTypeFilter] = useState("");
   const [mounted, setMounted] = useState(false);
 
-  useEffect(() => { setMounted(true); }, []);
+  // Defer mount flag so the SSR-disabled map only renders after hydration.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setMounted(true);
+  }, []);
 
   const filtered = MOCK_LISTINGS.filter((l) => {
     const matchTx = !txFilter || l.transactionType === txFilter;

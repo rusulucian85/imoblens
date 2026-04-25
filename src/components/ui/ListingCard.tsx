@@ -1,4 +1,4 @@
-import { Heart, MapPin, Maximize2, BedDouble, Bath } from "lucide-react";
+import { Heart, Maximize2, BedDouble, Bath } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import type { MockListing } from "@/types/listing";
