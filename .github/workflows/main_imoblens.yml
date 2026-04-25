@@ -46,15 +46,16 @@ jobs:
         run: |
           cp -r .next/static .next/standalone/.next/static
           cp -r public .next/standalone/public
-          # Overwrite any stale oryx-manifest.toml so Oryx startup runner
-          # doesn't try to extract a node_modules tarball that doesn't exist.
           printf '[BuildProperties]\nOperationId = "standalone"\n' > .next/standalone/oryx-manifest.toml
+
+      - name: Package standalone (tar preserves symlinks)
+        run: tar -czf standalone.tar.gz -C .next/standalone .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: node-app
-          path: .next/standalone/
+          path: standalone.tar.gz
           if-no-files-found: error
 
   deploy:
@@ -70,6 +71,9 @@ jobs:
         with:
           name: node-app
 
+      - name: Extract standalone
+        run: mkdir -p app && tar -xzf standalone.tar.gz -C app
+
       - name: Login to Azure
         uses: azure/login@v2
         with:
@@ -82,5 +86,5 @@ jobs:
         with:
           app-name: "imoblens"
           slot-name: "Production"
-          package: .
+          package: app
           startup-command: "node server.js"
