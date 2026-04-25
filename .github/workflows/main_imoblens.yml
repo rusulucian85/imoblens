@@ -46,6 +46,9 @@ jobs:
         run: |
           cp -r .next/static .next/standalone/.next/static
           cp -r public .next/standalone/public
+          # Overwrite any stale oryx-manifest.toml so Oryx startup runner
+          # doesn't try to extract a node_modules tarball that doesn't exist.
+          printf '[BuildProperties]\nOperationId = "standalone"\n' > .next/standalone/oryx-manifest.toml
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
