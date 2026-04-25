@@ -47,6 +47,10 @@ jobs:
           cp -r .next/static .next/standalone/.next/static
           cp -r public .next/standalone/public
           printf '[BuildProperties]\nOperationId = "standalone"\n' > .next/standalone/oryx-manifest.toml
+          # server.js does require('next') but NFT doesn't trace it because it's
+          # in a generated template; copy the next package manually so it resolves.
+          mkdir -p .next/standalone/node_modules/next
+          cp -r node_modules/next/. .next/standalone/node_modules/next/
 
       - name: Package standalone (tar preserves symlinks)
         run: tar -czf standalone.tar.gz -C .next/standalone .
